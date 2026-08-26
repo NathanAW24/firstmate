@@ -31,18 +31,11 @@ For a Lavish review artifact firstmate owns (a live investigating scout should h
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
-After the source-owning worker or secondmate has applied feedback and updated the artifact, it can send exactly one reply on the next blocking wait without creating another poller:
-
-```sh
-printf '%s' "$reply" | bin/fm-procevent-lavish.sh arm-reply <artifact.html>
-```
-
-Run that command in the same `FM_HOME` that owns the armed source.
-The reply comes only from stdin, is bounded and staged privately, is passed as one literal argument rather than shell input, and is removed from every later ordinary poll.
-A second pending or in-flight reply and a live owner in another home are refused.
-The adapter header and `--help` own the exact bound and mechanics.
-A reply is consumed before the Lavish call because no upstream receipt can prove whether Lavish displayed it: after that point, a crash can lose it, and recovery deliberately resumes reply-free polling rather than risk a duplicate.
-The exact transient poll interruption is still retried, but every retry after the reply-bearing attempt is reply-free for the same reason.
+A Lavish feedback loop has one agent owner at a time.
+When a live worker is iterating the artifact, route each result to that same worker by source id, sequence, and result path; otherwise the current firstmate or secondmate owns the loop.
+The owner applies or answers the feedback and performs the acknowledgement-and-reply transition below in the `FM_HOME` that owns the source.
+The supervisor must not perform that transition too.
+The blocking poll itself always remains adapter-owned.
 
 When a source carries captain answers to captain-held tasks, bind it BEFORE arming it, so it can never produce an answer that has nowhere to go:
 
@@ -77,6 +70,33 @@ Two rules the commands cannot enforce for you:
 - **A source is a wait on an external process, not a task.** It gets no task metadata and no backlog entry. If the wait itself needs tracking, file it as its own work item.
 
 ## Handling a wake
+
+### Continuous Lavish conversation
+
+For a `procevent lavish <source-id> <sequence>` result, first run both `classify` and `terminal` through `bin/fm-procevent-lavish.sh` rather than inferring lifecycle from prompt prose.
+Treat every ordinary `feedback` result as one turn in a continuing conversation, whether it requires an artifact edit or only an answer.
+If a worker owns the artifact, route the result path to that same worker and require it to return through the following transition; do not merely tell it not to poll.
+The direct `lavish-axi poll ... --agent-reply` command in Lavish's `next_step` is for a foreground loop and must not be run alongside this adapter-owned source.
+
+After applying the feedback and preparing one concise reply, claim the result before producing that external effect:
+
+```sh
+handled=$(bin/fm-procevent.sh handled <source-id> <sequence>)
+if [ "$handled" = "handled: <source-id> <sequence>" ]; then
+  printf '%s' "$reply" | bin/fm-procevent-lavish.sh arm-reply <artifact.html>
+fi
+```
+
+Use the actual source id and sequence in both the command and the exact comparison.
+The first `handled:` result authorizes one `arm-reply`; `already-handled:` authorizes no browser reply, so inspect already-applied artifact state without repeating that external response.
+This handled-before-reply order deliberately chooses possible reply loss across a crash over a duplicate browser response.
+`arm-reply` is the required transition after every nonterminal ordinary feedback turn: it displays the reply in the Conversation panel and immediately leaves the same registered source waiting for the next prompt, without a direct poll or second poller.
+The adapter consumes the reply before invoking Lavish, retries the exact transient interruption only in reply-free form, and leaves every later ordinary generation reply-free.
+If `arm-reply` reports an ambiguous failure after the result was handled, do not resend the reply; preserve or recover reply-free polling and report the possible lost response.
+Repeat this sequence until explicit loop completion or a terminal result.
+
+If `terminal` succeeds, including final feedback carrying `session_ended` from `Send & End`, apply any final input and acknowledge the result but do not call `arm-reply`, re-arm, or reopen the session.
+For an explicit nonterminal loop completion, acknowledge the current result when applicable and retire the source instead of arming another reply-bearing wait.
 
 `procevent <adapter> <source-id> <sequence>`
 : The named durable result is waiting at `state/procevent-inbox/<source-id>.<sequence>.result`. Read that exact result; separate wakes identify later results independently.
