@@ -1,0 +1,17 @@
+ok - ordinary no-mistakes worktree accepts only the personal repository and base
+ok - direct PR delivery is refused for the attestation-required personal base
+ok - managed no-mistakes worktree verifies its target without inventing an upstream remote
+ok - upstream repository request is refused
+ok - upstream base request is refused
+ok - protected base cannot be used as the task branch
+ok - wrong origin fetch repository is refused
+ok - wrong origin push repository is refused
+ok - upstream fetch must remain the canonical upstream repository
+ok - enabled upstream push URL is refused
+ok - wrong advertised default branch is refused
+ok - wrong no-mistakes PR repository is refused
+ok - wrong no-mistakes push target is refused
+ok - gate-only upstream exemption requires the gate marker
+ok - unreadable advertised base is refused
+ok - unreadable no-mistakes target is refused
+ALL TESTS PASSED
