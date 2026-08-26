@@ -1,0 +1,35 @@
+=== fm-personal-pr-target-check.test.sh ===
+FM_TEST_BEGIN 2026-08-26T04:02:29Z tests/fm-personal-pr-target-check.test.sh family=pr-forge expected_gate_skip=none
+ok - ordinary no-mistakes worktree accepts only the personal repository and base
+ok - direct PR preflight does not depend on an initialized no-mistakes gate
+ok - managed no-mistakes worktree verifies its target without inventing an upstream remote
+ok - upstream repository request is refused
+ok - upstream base request is refused
+ok - protected base cannot be used as the task branch
+ok - wrong origin fetch repository is refused
+ok - wrong origin push repository is refused
+ok - upstream fetch must remain the canonical upstream repository
+ok - enabled upstream push URL is refused
+ok - wrong advertised default branch is refused
+ok - wrong no-mistakes PR repository is refused
+ok - wrong no-mistakes push target is refused
+ok - gate-only upstream exemption requires the gate marker
+ok - unreadable advertised base is refused
+ok - unreadable no-mistakes target is refused
+ALL TESTS PASSED
+FM_TEST_END 2026-08-26T04:02:30Z tests/fm-personal-pr-target-check.test.sh exit=0 duration_ms=544 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=776
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=544 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-personal-pr-target-check.test.sh duration_ms=544
+
+=== Refusal demos ===
+--- Wrong repository ---
+REFUSED: personal Firstmate PR target: repository must be NathanAW24/firstmate, not kunchenguid/firstmate
+--- Wrong base ---
+REFUSED: personal Firstmate PR target: base must be nathan-main, not main
+
+=== Workflow trigger assertions ===
+push triggers: ['main']
+PR triggers (ci.yml): ['main', 'nathan-main']
+PR triggers (no-mistakes-required.yml): ['main', 'nathan-main']
+All workflow assertions PASSED
