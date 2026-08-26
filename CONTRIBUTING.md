@@ -1,7 +1,11 @@
 # Contributing
 
 Thanks for wanting to contribute.
-One rule up front:
+
+Nathan's personal Firstmate work targets `NathanAW24/firstmate:nathan-main` exclusively.
+For that work, never create, edit, comment on, close, or otherwise modify a pull request in `kunchenguid/firstmate`; the upstream workflow below applies only to a separately authorized upstream contribution.
+
+One rule for upstream contributions:
 
 **Human-authored pull requests targeting `main` must be raised through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes).**
 We require this to reduce the maintainer's burden of reviewing and merging contributions.
