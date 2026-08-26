@@ -39,7 +39,10 @@ case "$command" in
     fm_completed_view_list "$STATE"
     ;;
   dismiss)
-    [ "$#" -eq 1 ] && fm_completed_view_valid_task_id "$1" || { usage; exit 2; }
+    if [ "$#" -ne 1 ] || ! fm_completed_view_valid_task_id "$1"; then
+      usage
+      exit 2
+    fi
     id=$1
     record=$(fm_completed_view_record_path "$STATE" "$id")
     [ -e "$record" ] || [ -L "$record" ] || {

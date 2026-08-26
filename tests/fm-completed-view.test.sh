@@ -13,7 +13,7 @@ VIEWS="$ROOT/bin/fm-completed-view.sh"
 TMP_ROOT=$(fm_test_tmproot fm-completed-view)
 
 make_case() {
-  local name=$1 root="$TMP_ROOT/$1" home="$TMP_ROOT/$1/home" fakebin="$TMP_ROOT/$1/fakebin"
+  local root="$TMP_ROOT/$1" home="$TMP_ROOT/$1/home" fakebin="$TMP_ROOT/$1/fakebin"
   mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
   git init -q --bare "$root/origin.git"
   git -C "$root/origin.git" symbolic-ref HEAD refs/heads/main

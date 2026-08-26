@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # Sourceable API output globals are consumed by callers.
 # fm-completed-view-lib.sh - single owner of completed-task presentation policy,
 # configuration, bounded records, sanitized summaries, and Herdr parking state.
 #
