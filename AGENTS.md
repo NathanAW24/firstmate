@@ -274,8 +274,8 @@ Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
 
-Before routing or starting any task that will change tracked code, load `nathan-coding-loop`.
-A second mate must coordinate separate implementation and independent review workers through one task PR until the reviewer explicitly reports no material findings on its current head; a missing viable second-mate or PR path is a blocker to escalate, and reviewer satisfaction never grants merge authority.
+Before routing or starting any task that will change tracked code, load `nathan-coding-loop` and keep it loaded through completion.
+That skill is the single owner of the mandatory second-mate developer-reviewer procedure; it requires a viable PR path and never grants merge authority.
 
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
 Keep `local-only` work in the main home when it is eligible to proceed outside the tracked-code PR requirement.
@@ -325,8 +325,8 @@ Supervise all live work under section 8.
 ### Selected delivery path and merge authority
 
 The selected delivery path owns its own rigor.
-For tracked code, the independent loop owned by `nathan-coding-loop` complements that path and is the only additional review layer: no-mistakes retains ownership of its automated review, fixes, tests, documentation, push, PR, and CI, while the faster path retains its ordinary delivery mechanics.
-Outside that mandatory loop, follow the selected path without adding an independent reviewer.
+For tracked code, the mandatory `nathan-coding-loop` procedure is the only additional review layer, and the selected path retains its ordinary delivery responsibilities.
+Outside that procedure, follow the selected path without adding an independent reviewer.
 Never hold work for another manual clean verdict, stack additional serial reviews, or infer authority for one from security, architecture, or risk alone.
 A separate review or audit beyond the mandatory loop is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
 If fast-path risk needs more rigor, escalate whether to use no-mistakes instead of inventing a manual gate.
@@ -372,7 +372,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
-After any mandatory `nathan-coding-loop` loop is clean for that exact current head, tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
+After all required review is complete for the exact current head, tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
 
