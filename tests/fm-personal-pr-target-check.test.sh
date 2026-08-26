@@ -105,7 +105,7 @@ expect_ok 'ordinary no-mistakes worktree accepts only the personal repository an
 
 reset_fixture
 export FM_TEST_DELIVERY=direct-PR FM_TEST_NO_MISTAKES_FAIL=1
-expect_ok 'direct PR preflight does not depend on an initialized no-mistakes gate'
+expect_refusal 'direct PR delivery is refused for the attestation-required personal base' 'personal Firstmate PR delivery must use no-mistakes'
 
 reset_fixture
 export FM_TEST_GATE_ARG=--gate-worktree NO_MISTAKES_GATE=1 FM_TEST_UPSTREAM_MISSING=1

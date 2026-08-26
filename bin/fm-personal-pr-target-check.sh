@@ -6,12 +6,12 @@
 #   fm-personal-pr-target-check.sh \
 #     --repository NathanAW24/firstmate \
 #     --base nathan-main \
-#     --delivery <no-mistakes|direct-PR> [--gate-worktree]
+#     --delivery no-mistakes [--gate-worktree]
 #
 # This is the executable preflight at the personal Firstmate PR-delivery seam.
 # It verifies the caller's intended repository and base, the local origin,
-# origin's advertised default branch, and (for no-mistakes) the gate's recorded
-# PR repository and push target. Ordinary worktrees must also keep upstream as
+# origin's advertised default branch, and the gate's recorded PR repository and
+# push target. Ordinary worktrees must also keep upstream as
 # a fetch-only kunchenguid/firstmate remote whose push URL is literally
 # DISABLED. A no-mistakes gate worktree has only its managed origin, so the
 # trusted .no-mistakes.yaml invocation passes --gate-worktree; that option is
@@ -134,10 +134,8 @@ done
   || refuse "repository must be $EXPECTED_REPOSITORY, not ${REPOSITORY:-<missing>}"
 [ "$BASE" = "$EXPECTED_BASE" ] \
   || refuse "base must be $EXPECTED_BASE, not ${BASE:-<missing>}"
-case "$DELIVERY" in
-  no-mistakes|direct-PR) ;;
-  *) refuse "delivery must be no-mistakes or direct-PR" ;;
-esac
+[ "$DELIVERY" = no-mistakes ] \
+  || refuse "personal Firstmate PR delivery must use no-mistakes"
 if [ "$GATE_WORKTREE" -eq 1 ] && [ -z "${NO_MISTAKES_GATE:-}" ]; then
   refuse "--gate-worktree is reserved for a no-mistakes gate worktree"
 fi
@@ -170,16 +168,14 @@ advertised_head=$(printf '%s\n' "$advertised" | awk '$1 == "ref:" && $3 == "HEAD
 [ "$advertised_head" = "refs/heads/$EXPECTED_BASE" ] \
   || refuse "origin's advertised default branch must be $EXPECTED_BASE"
 
-if [ "$DELIVERY" = no-mistakes ]; then
-  status=$(NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes status 2>/dev/null) \
-    || refuse "no-mistakes status could not verify its PR target"
-  gate_remote=$(status_repository "$status" 'remote:')
-  [ "$gate_remote" = "$EXPECTED_REPOSITORY" ] \
-    || refuse "no-mistakes PR repository must be $EXPECTED_REPOSITORY"
-  gate_fork=$(status_repository "$status" 'fork:')
-  [ "$gate_fork" = "$EXPECTED_REPOSITORY" ] \
-    || refuse "no-mistakes push target must be $EXPECTED_REPOSITORY"
-fi
+status=$(NO_MISTAKES_NO_UPDATE_CHECK=1 no-mistakes status 2>/dev/null) \
+  || refuse "no-mistakes status could not verify its PR target"
+gate_remote=$(status_repository "$status" 'remote:')
+[ "$gate_remote" = "$EXPECTED_REPOSITORY" ] \
+  || refuse "no-mistakes PR repository must be $EXPECTED_REPOSITORY"
+gate_fork=$(status_repository "$status" 'fork:')
+[ "$gate_fork" = "$EXPECTED_REPOSITORY" ] \
+  || refuse "no-mistakes push target must be $EXPECTED_REPOSITORY"
 
 printf 'personal Firstmate PR target verified: repository=%s base=%s delivery=%s\n' \
   "$EXPECTED_REPOSITORY" "$EXPECTED_BASE" "$DELIVERY"
