@@ -35,7 +35,7 @@ document:
 # security, Herdr, tmux, and lifecycle coverage). A full-suite override here
 # would duplicate CI and defeat the targeted Test contract.
 commands:
-  lint: 'bin/fm-lint.sh'
+  lint: 'bin/fm-personal-pr-target-check.sh --repository NathanAW24/firstmate --base nathan-main --delivery no-mistakes --gate-worktree && bin/fm-lint.sh'
 
 # Publish each run's test evidence to the orphan no-mistakes/evidence branch linked from the PR.
 # The evidence is not committed to the feature or default branch.

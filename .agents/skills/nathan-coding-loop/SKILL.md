@@ -48,6 +48,25 @@ Scaffold the implementation as a ship using the selected PR mode.
 Scaffold the reviewer as a scout, then make its task-specific instructions retain the no-code rule, the full-diff protocol below, the GitHub comment requirement, and the iterative wait for later heads.
 Do not weaken either generated scaffold's safety sections.
 
+## Personal Firstmate fork target preflight
+
+Personal Firstmate work is allowed to create or update a PR only in `NathanAW24/firstmate`, with base `nathan-main`; it must not modify a PR in `kunchenguid/firstmate` in any way.
+This fork rule does not replace the separately authorized upstream-contribution workflow in `CONTRIBUTING.md`.
+
+Before implementation starts, and again immediately before the selected delivery path can create a PR, inspect the task record and query both repositories with `gh-axi` for an open PR carrying the task branch.
+Query `NathanAW24/firstmate` with the branch name and query `kunchenguid/firstmate` with the qualified `NathanAW24:<branch>` head.
+Reuse the one matching personal-fork PR when it exists.
+If a matching upstream PR exists, or the results are ambiguous, stop without editing, commenting on, closing, or otherwise touching any PR and escalate.
+
+Personal Firstmate tracked work always uses `no-mistakes`, because `nathan-main` enforces the no-mistakes attestation and a `direct-PR` cannot satisfy that policy check.
+Run `bin/fm-personal-pr-target-check.sh --repository NathanAW24/firstmate --base nathan-main --delivery no-mistakes` from the implementation worktree before PR delivery.
+Its header and `--help` own the exact remote, default-branch, and no-mistakes target checks; any refusal blocks delivery rather than inviting a manual bypass.
+Initialize or refresh the gate only with the explicit personal fork URL, and stop unless `no-mistakes status` identifies `NathanAW24/firstmate` as both the PR repository and push target before starting the run.
+The trusted personal-fork `.no-mistakes.yaml` runs the same target check during lint, before its push and PR steps.
+
+After creation, use `gh-axi api /repos/NathanAW24/firstmate/pulls/<number>` to verify the repository identity, `head.ref`, `base.ref`, and `head.sha` against the implementation worker's exact current head before reporting the PR or starting review.
+A mismatch is a blocker and never authority to repair or close a PR in the upstream repository.
+
 ## Establish the one task PR
 
 Before the implementation worker opens anything, inspect the task's durable records and query GitHub with `gh-axi` for an existing open PR for its branch.
