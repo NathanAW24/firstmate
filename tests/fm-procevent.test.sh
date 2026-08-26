@@ -778,9 +778,10 @@ esac
 SH
 chmod +x "$LAVISH_REPLY_BIN/lavish-axi"
 
-# One shell-looking reply is passed literally once. After its response, the
-# next registered generation is ordinary reply-free polling, and replacement
-# never overlaps the listener it stopped.
+# Two consecutive feedback/reply cycles use the same registered source. Each
+# reply is delivered through the public --agent-reply seam exactly once, each
+# returned feedback is acknowledged before the next reply, and every completed
+# reply-bearing generation returns to one ordinary reply-free listener.
 HREPLY="$TMP_ROOT/hreply"; new_home "$HREPLY"
 REPLY_ART="$TMP_ROOT/reply-board.html"
 printf '<h1>reply</h1>\n' > "$REPLY_ART"
@@ -796,21 +797,52 @@ wait_for "$LAVISH_REPLY_LOG.initial-ready" || fail "the initial reply test liste
 unsafe_reply='literal $(touch should-not-exist); * [still data]'
 printf '%s' "$unsafe_reply" | PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HREPLY" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm-reply "$REPLY_ART" >/dev/null
-wait_for "$HREPLY/state/.wake-queue" || fail "the one-shot reply produced no captured result"
-assert_contains "$(cat "$LAVISH_REPLY_LOG")" "reply:$unsafe_reply" "the reply did not arrive as one literal argv element"
+wait_for "$HREPLY/state/procevent-inbox/$reply_id.1.result" \
+  || fail "the first reply cycle produced no captured feedback"
+assert_contains "$(cat "$LAVISH_REPLY_LOG")" "reply:$unsafe_reply" \
+  "the first conversation reply did not arrive as one literal argv element"
 assert_absent "$PWD/should-not-exist" "shell-looking reply input was executed"
-[ "$(grep -c '^reply:' "$LAVISH_REPLY_LOG")" -eq 1 ] || fail "the one-shot reply was sent more than once"
+handled_out=$(PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HREPLY" handled "$reply_id" 1)
+assert_contains "$handled_out" "handled: $reply_id 1" \
+  "the first feedback was not acknowledged before continuing"
 for _ in $(seq 1 50); do
   PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HREPLY" reconcile >/dev/null
   [ -e "$LAVISH_REPLY_LOG.plain-2-ready" ] && break
   sleep 0.1
 done
-assert_present "$LAVISH_REPLY_LOG.plain-2-ready" "the reply generation did not return to ordinary polling"
-[ "$(grep -c '^reply:' "$LAVISH_REPLY_LOG")" -eq 1 ] || fail "ordinary rearm resent the consumed reply"
-assert_absent "$LAVISH_REPLY_LOG.overlap" "listener replacement ran simultaneous pollers"
+assert_present "$LAVISH_REPLY_LOG.plain-2-ready" \
+  "the first reply cycle did not return to ordinary polling"
+
+second_reply='cycle two applied'
+printf '%s' "$second_reply" | PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HREPLY" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm-reply "$REPLY_ART" >/dev/null
+wait_for "$HREPLY/state/procevent-inbox/$reply_id.2.result" \
+  || fail "the second reply cycle produced no captured feedback"
+assert_contains "$(cat "$LAVISH_REPLY_LOG")" "reply:$second_reply" \
+  "the second conversation reply was not delivered"
+[ "$(grep -c '^reply:' "$LAVISH_REPLY_LOG")" -eq 2 ] \
+  || fail "two feedback cycles did not deliver exactly two conversation replies"
+handled_out=$(PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HREPLY" handled "$reply_id" 2)
+assert_contains "$handled_out" "handled: $reply_id 2" \
+  "the second feedback was not acknowledged before continuing"
+for _ in $(seq 1 50); do
+  PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HREPLY" reconcile >/dev/null
+  [ -e "$LAVISH_REPLY_LOG.plain-3-ready" ] && break
+  sleep 0.1
+done
+assert_present "$LAVISH_REPLY_LOG.plain-3-ready" \
+  "the second reply cycle did not remain armed with an ordinary poll"
+handled_out=$(PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HREPLY" handled "$reply_id" 2)
+assert_contains "$handled_out" "already-handled: $reply_id 2" \
+  "a repeated feedback delivery did not expose its duplicate identity"
+[ "$(grep -c '^reply:' "$LAVISH_REPLY_LOG")" -eq 2 ] \
+  || fail "a repeated feedback delivery duplicated a conversation reply"
+[ "$(grep -c '^plain:' "$LAVISH_REPLY_LOG")" -eq 3 ] \
+  || fail "two reply cycles did not leave exactly one continued plain poll: $(cat "$LAVISH_REPLY_LOG")"
+assert_absent "$LAVISH_REPLY_LOG.overlap" "continuous reply cycles ran simultaneous pollers"
 PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HREPLY" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$REPLY_ART" >/dev/null
-pass "one unsafe-looking reply is literal and one-shot, then polling returns to the plain form"
+pass "two conversation reply cycles stay single-owner, deduplicated, and continuously armed"
 
 # A transiently interrupted reply-carrying wait retries the blocking wait, but
 # the retry is deliberately plain because Lavish may already have displayed the

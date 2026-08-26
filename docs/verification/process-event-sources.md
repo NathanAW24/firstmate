@@ -9,6 +9,7 @@ Verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 install
 Generic keyed-answer feed verified on 2026-08-16 on the same platform, against the same published poll response shape.
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 One-shot Lavish agent replies verified on 2026-08-25 on Linux 6.6.87.2-microsoft-standard-WSL2 x86_64 with `lavish-axi` 0.1.53 installed.
+The continuous Lavish conversation transition was reverified on 2026-08-26 on the same platform and version through a disposable live session and the public process-event adapter.
 
 ## The published Lavish poll interface the adapter wraps
 
@@ -44,6 +45,33 @@ $ lavish-axi --version
 $ lavish-axi poll --help | head -1
 Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 ```
+
+## Continuous conversation transition
+
+A disposable live artifact established the negative control and the smallest counterfactual through `chrome-devtools-axi`, `lavish-axi` 0.1.53, and an isolated process-event home.
+After ordinary feedback `cycle one` was captured and acknowledged without `arm-reply`, the public source listing showed `OWNER none` and `PENDING 0`, while the browser showed only the `YOU` bubble plus `Working...` with both send controls disabled.
+This reproduces the missing agent bubble and missing next wait without changing the artifact owner's lifecycle or the Lavish session.
+
+The same session then used the public transition:
+
+```sh
+$ printf '%s' 'Cycle one applied.' | \
+    FM_HOME="$test_home" FM_PROCEVENT_CLAIM_ROOT="$claims" \
+    bin/fm-procevent-lavish.sh arm-reply "$artifact"
+restarted: lavish-b26ec7301c4dad99
+reply-armed: lavish-b26ec7301c4dad99
+artifact: /.../continuous-loop.html
+
+$ FM_HOME="$test_home" FM_PROCEVENT_CLAIM_ROOT="$claims" \
+    bin/fm-procevent.sh list
+SOURCE                       ADAPTER      OWNER      PENDING
+lavish-b26ec7301c4dad99      lavish       live       0
+```
+
+The browser then showed alternating `YOU cycle one` and `AGENT Cycle one applied.` bubbles with both send controls enabled.
+A second ordinary prompt and `arm-reply` produced `YOU cycle two` and `AGENT Cycle two applied.` in the same Conversation panel and again left one live source with no pending result.
+A final `Send & End` returned one third result with `status: feedback`, `session_ended: true`, and `ended_by: user`; after acknowledgement, `reconcile` reported `started=0` and `list` reported `no sources registered`.
+The setup is repeatable with any disposable HTML file and isolated `FM_HOME`: omitting the acknowledgement-and-`arm-reply` transition reproduces the symptom, while adding it restores both the browser reply and the next wait.
 
 ## Why an ended Lavish review is terminal
 
@@ -96,7 +124,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
 | registration-generation retirement | an old terminal runner preserves a concurrently replaced registration and releases ownership so the replacement runs independently; injected registration-removal failure retains a terminal claim, performs no second poll, and completes idempotently once removal recovers |
 | one `Send & End`, one result | an armed Lavish source driven against a stand-in for the published poll, which delivers the final `session_ended` feedback once and empty ended sessions afterward, polls exactly once, captures exactly one result, publishes one distinct event, and retires itself |
-| one-shot Lavish agent reply | the public `arm-reply` path stops the source-owning home's active plain listener, starts one reply-bearing wait with a private bounded stdin payload passed as one literal argv element, and then leaves the unchanged registration to start a plain wait; a reply-bearing `Send & End` still retires that registration without another poll; shell-looking text is not executed, and empty, NUL-containing, oversized, concurrent, and foreign-owner attempts are refused |
+| continuous Lavish conversation | two consecutive cycles through the public `handled` and `arm-reply` interfaces each deliver one literal Conversation reply, expose duplicate handling without authorizing another reply, return to exactly one ordinary reply-free listener, and never overlap pollers; a reply-bearing `Send & End` still retires that registration without another poll; shell-looking text is not executed, and empty, NUL-containing, oversized, concurrent, and foreign-owner attempts are refused |
 | reply interruption and crash boundary | the exact transient interruption retries as a plain wait without resending the reply, while a result-less failure after the reply-bearing invocation resumes ordinary polling and never repeats the ambiguously consumed reply |
 | reply restart exclusion | fixture pollers take an external overlap marker around their whole lifetime, proving the old generation exits before the reply generation starts, a second reply cannot start while the first is in flight, and a second home's source cannot displace the live owner |
 | bounded re-announcement until handled | a durably captured result with no handled acknowledgement is re-announced by `reconcile` with the same source and sequence on every call - not only the first restart after a crash - and a presented-but-unacknowledged wake resurfaces identically after a simulated replacement session |
