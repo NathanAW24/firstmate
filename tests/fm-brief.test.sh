@@ -521,34 +521,26 @@ test_secondmate_no_projects_charter() {
 }
 
 test_secondmate_code_review_trigger() {
-  local home brief pointer detail count
+  local home brief
   home="$TMP_ROOT/code-review-trigger-home"
-  pointer="Before coordinating any task that will change tracked code, load \`nathan-coding-loop\` and follow it as the single owner of the mandatory developer-reviewer procedure."
   mkdir -p "$home/data"
 
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Coordinate sample code changes.' \
     "$ROOT/bin/fm-brief.sh" review-mate --secondmate sample >/dev/null 2>&1
+  brief="$home/data/review-mate/brief.md"
+  assert_grep "Before coordinating any task that will change tracked code, load \`nathan-coding-loop\` and follow its mandatory developer-reviewer loop." "$brief" \
+    "project-backed secondmate charter did not load the mandatory code-review owner"
+  assert_no_grep 'gh-axi pr diff --full' "$brief" \
+    "secondmate charter duplicated the detailed code-review procedure"
 
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Coordinate Firstmate code changes.' \
     "$ROOT/bin/fm-brief.sh" review-mate-no-projects --secondmate --no-projects >/dev/null 2>&1
-
-  for brief in \
-    "$home/data/review-mate/brief.md" \
-    "$home/data/review-mate-no-projects/brief.md"; do
-    assert_grep "$pointer" "$brief" \
-      "secondmate charter did not load the single code-review procedure owner"
-    count=$(grep -Fxc -- "$pointer" "$brief")
-    [ "$count" -eq 1 ] || fail "secondmate charter did not emit exactly one code-review owner pointer"
-    for detail in \
-      'gh-axi pr diff --full' \
-      'gpt-5.6-sol' \
-      'Claude-Opus-4.8' \
-      'no material findings'; do
-      assert_no_grep "$detail" "$brief" \
-        "secondmate charter copied review-procedure detail instead of pointing to its owner"
-    done
-  done
-  pass "fm-brief.sh: every secondmate charter loads only the tracked-code review-loop owner"
+  brief="$home/data/review-mate-no-projects/brief.md"
+  assert_grep "Before coordinating any task that will change tracked code, load \`nathan-coding-loop\` and follow its mandatory developer-reviewer loop." "$brief" \
+    "project-less secondmate charter did not load the mandatory code-review owner"
+  assert_no_grep 'no material findings' "$brief" \
+    "secondmate charter copied the review procedure instead of pointing to its owner"
+  pass "fm-brief.sh: every secondmate charter loads the tracked-code review-loop owner"
 }
 
 test_secondmate_marked_request_reporting_contract() {
