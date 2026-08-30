@@ -4,6 +4,11 @@
 # Usage:
 #   fm-procevent-lavish.sh arm <artifact.html>
 #   printf '%s' '<reply>' | fm-procevent-lavish.sh arm-reply <artifact.html>
+#   fm-procevent-lavish.sh worker-open <task-id> <artifact.html>
+#   fm-procevent-lavish.sh worker-poll <task-id> <artifact.html>
+#   printf '%s' '<reply>' | fm-procevent-lavish.sh worker-reply <task-id> <artifact.html>
+#   fm-procevent-lavish.sh worker-end <task-id> <artifact.html>
+#   fm-procevent-lavish.sh worker-status <artifact.html>
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
@@ -11,27 +16,44 @@
 #   fm-procevent-lavish.sh retire <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
 #
-# arm-reply  Read one nonempty agent reply of at most 8192 bytes from stdin,
-#            replace this home's existing Lavish listener, and start its next
-#            blocking wait with that reply. The reply is staged at mode 0600,
-#            passed as one direct argv element, and consumed at most once. A
-#            live owner in another home, an in-flight reply, or uncertain source
-#            ownership is refused rather than displaced or overwritten.
-# classify   Print the lifecycle state a handler should act on: feedback, ended,
-#            waiting, missing, or unknown.
-# poll       The registered listener command `arm` publishes, not a command to
-#            run in a conversational turn. It runs the published blocking poll
-#            and prints its response verbatim, absorbing only the one exact
-#            transient interruption described below.
-# terminal   Exit 0 when the captured result means this Lavish source will never
-#            produce another result, so the runner may retire it; any other exit
-#            keeps it armed. This is the generic adapter contract bin/fm-procevent.sh
-#            calls, and the only place Lavish's notion of "ended" is decided.
+# arm-reply    Read one nonempty agent reply of at most 8192 bytes from stdin,
+#              replace this home's existing Lavish listener, and start its next
+#              blocking process-event wait with that reply.
+# worker-open  From the named live task's recorded worktree, claim one artifact
+#              for that dedicated worker and open or resume its Lavish session.
+# worker-poll  Run one reply-free Lavish wait in the worker's foreground.
+# worker-reply Read one bounded reply from stdin and run the next foreground
+#              wait with that reply.
+# worker-end   End the Lavish session and release the dedicated worker claim.
+# worker-status
+#              Report the artifact's dedicated owner and active-poll state.
+# classify     Print the lifecycle state a handler should act on: feedback,
+#              ended, waiting, missing, or unknown.
+# poll         The registered listener command `arm` publishes, not a command to
+#              run in a conversational turn. It runs the published blocking poll
+#              and prints its response verbatim, absorbing only the one exact
+#              transient interruption described below.
+# terminal     Exit 0 when the captured result means this Lavish source will
+#              never produce another result, so the runner may retire it.
 #
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
 # canonical source identity, the argv for the currently published poll command,
-# and how to read a completed result. Ownership, durable capture, publication,
-# and restart recovery all belong to bin/fm-procevent.sh.
+# foreground-worker reservation, and how to read a completed result. Generic
+# process ownership, durable capture, publication, and restart recovery belong
+# to bin/fm-procevent.sh.
+#
+# DEDICATED WORKER OWNERSHIP, owned here and nowhere else. `worker-open` records
+# the named task and its existing worktree against Lavish's canonical artifact
+# identity. That durable reservation survives ordinary task relaunch so the same
+# task, worktree, artifact, and browser session remain one context. Each
+# `worker-poll` or `worker-reply` call then records its live process identity
+# while the public Lavish poll blocks in that worker's foreground. A second
+# foreground poll and every process-event registration or start for that source
+# are refused while the reservation exists. A stale active-poll record is
+# reclaimed only after its exact process identity is gone. `Send & End` releases
+# the reservation after delivering its final response; `worker-end` performs the
+# same cleanup for explicit completion. The worker owner does not create a
+# process-event registration, captured-result record, or supervisor wake.
 #
 # `answers` is this adapter's half of the generic keyed-answer contract in
 # bin/fm-procevent.sh. It reports what the captain actually chose, as
@@ -101,7 +123,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,88p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,110p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -118,6 +140,232 @@ cmd_source_id() {
   else
     printf 'lavish-%s\n' "$(printf '%s' "$real" | sha256sum | awk '{print substr($1,1,16)}')"
   fi
+}
+
+worker_owner_path() { printf '%s/%s.worker-owner\n' "$(fm_procevent_claim_root)" "$1"; }
+worker_active_path() { printf '%s/%s.worker-active\n' "$(fm_procevent_claim_root)" "$1"; }
+
+meta_value() {  # <meta-file> <key>
+  awk -F= -v key="$2" '
+    index($0, key "=") == 1 { count++; value=substr($0, length(key) + 2) }
+    END { if (count != 1 || value == "") exit 1; print value }
+  ' "$1"
+}
+
+# Resolve and validate the dedicated task context before it can claim an
+# artifact. The artifact and caller both have to live inside the task's recorded
+# isolated worktree; a secondmate or primary checkout cannot masquerade as the
+# delegated worker merely by knowing its task id.
+worker_task_context() {  # <task-id> <artifact>
+  local task=$1 artifact=$2 meta kind worktree current
+  fm_task_id_path_safe "$task" || die "worker task id must be path-safe: $task"
+  meta="$STATE/$task.meta"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || die "worker task record does not exist: $task"
+  kind=$(meta_value "$meta" kind) || die "worker task record has no unique kind: $task"
+  case "$kind" in ship|scout) ;; *) die "Lavish review owner must be a ship or scout task: $task" ;; esac
+  worktree=$(meta_value "$meta" worktree) || die "worker task record has no unique worktree: $task"
+  case "$worktree" in *$'\n'*) die "worker worktree cannot contain newlines" ;; esac
+  LAVISH_WORKER_WORKTREE=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$worktree" 2>/dev/null) \
+    || die "cannot resolve the worker worktree: $worktree"
+  LAVISH_WORKER_ARTIFACT=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
+    || die "cannot resolve the artifact path: $artifact"
+  [ -f "$LAVISH_WORKER_ARTIFACT" ] || die "artifact does not exist: $artifact"
+  current=$(pwd -P) || die "cannot resolve the current working directory"
+  case "$current" in
+    "$LAVISH_WORKER_WORKTREE"|"$LAVISH_WORKER_WORKTREE"/*) ;;
+    *) die "worker command must run inside the recorded task worktree: $task" ;;
+  esac
+  case "$LAVISH_WORKER_ARTIFACT" in
+    "$LAVISH_WORKER_WORKTREE"/*) ;;
+    *) die "delegated artifact must stay inside the recorded task worktree: $task" ;;
+  esac
+  case "$FM_HOME$LAVISH_WORKER_WORKTREE$LAVISH_WORKER_ARTIFACT" in
+    *$'\n'*) die "worker ownership paths cannot contain newlines" ;;
+  esac
+  LAVISH_WORKER_TASK=$task
+}
+
+worker_owner_load_locked() {  # <source-id>
+  local path root device version home task worktree artifact extra
+  root=$(fm_procevent_claim_root)
+  path=$(worker_owner_path "$1")
+  device=$(fm_pr_file_device "$root" 2>/dev/null) || return 2
+  fm_pr_private_file_valid "$path" 600 "$device" || return 1
+  {
+    IFS= read -r version \
+      && IFS= read -r home \
+      && IFS= read -r task \
+      && IFS= read -r worktree \
+      && IFS= read -r artifact \
+      && ! IFS= read -r extra
+  } < "$path" || return 2
+  [ "$version" = version=1 ] || return 2
+  case "$home" in home=*) home=${home#home=} ;; *) return 2 ;; esac
+  case "$task" in task=*) task=${task#task=} ;; *) return 2 ;; esac
+  case "$worktree" in worktree=*) worktree=${worktree#worktree=} ;; *) return 2 ;; esac
+  case "$artifact" in artifact=*) artifact=${artifact#artifact=} ;; *) return 2 ;; esac
+  [ -n "$home" ] && fm_task_id_path_safe "$task" && [ -n "$worktree" ] && [ -n "$artifact" ] || return 2
+  LAVISH_WORKER_OWNER_HOME=$home
+  LAVISH_WORKER_OWNER_TASK=$task
+  LAVISH_WORKER_OWNER_WORKTREE=$worktree
+  LAVISH_WORKER_OWNER_ARTIFACT=$artifact
+}
+
+worker_owner_matches_context() {
+  [ "$LAVISH_WORKER_OWNER_HOME" = "$FM_HOME" ] \
+    && [ "$LAVISH_WORKER_OWNER_TASK" = "$LAVISH_WORKER_TASK" ] \
+    && [ "$LAVISH_WORKER_OWNER_WORKTREE" = "$LAVISH_WORKER_WORKTREE" ] \
+    && [ "$LAVISH_WORKER_OWNER_ARTIFACT" = "$LAVISH_WORKER_ARTIFACT" ]
+}
+
+worker_owner_write_locked() {  # <source-id>
+  local root dest tmp
+  root=$(fm_procevent_claim_root)
+  dest=$(worker_owner_path "$1")
+  tmp=$(umask 077; mktemp "$root/.worker-owner.XXXXXX") || return 1
+  if printf 'version=1\nhome=%s\ntask=%s\nworktree=%s\nartifact=%s\n' \
+      "$FM_HOME" "$LAVISH_WORKER_TASK" "$LAVISH_WORKER_WORKTREE" "$LAVISH_WORKER_ARTIFACT" > "$tmp" \
+    && chmod 0600 "$tmp" \
+    && mv -f -- "$tmp" "$dest"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+worker_owner_claim_locked() {  # <source-id>
+  local id=$1 owner claim registration
+  owner=$(worker_owner_path "$id")
+  claim=$(fm_procevent_claim_path "$id")
+  registration="$(fm_procevent_registry_dir "$STATE")/$id.source"
+  LAVISH_WORKER_OWNER_CREATED=0
+  if [ -e "$registration" ] || [ -L "$registration" ] \
+    || [ -e "$claim" ] || [ -L "$claim" ]; then
+    return 3
+  fi
+  if [ -e "$owner" ] || [ -L "$owner" ]; then
+    worker_owner_load_locked "$id" || return 2
+    worker_owner_matches_context || return 4
+    return 0
+  fi
+  worker_owner_write_locked "$id" || return 1
+  LAVISH_WORKER_OWNER_CREATED=1
+}
+
+worker_owner_release_locked() {  # <source-id>
+  local id=$1 owner active
+  owner=$(worker_owner_path "$id")
+  active=$(worker_active_path "$id")
+  [ ! -e "$owner" ] && [ ! -L "$owner" ] && return 0
+  worker_owner_load_locked "$id" || return 1
+  worker_owner_matches_context || return 1
+  if [ -e "$active" ] || [ -L "$active" ]; then
+    return 1
+  fi
+  rm -f -- "$owner"
+}
+
+worker_active_load_locked() {  # <source-id>
+  local path root device version home task worktree artifact pid token identity extra
+  root=$(fm_procevent_claim_root)
+  path=$(worker_active_path "$1")
+  device=$(fm_pr_file_device "$root" 2>/dev/null) || return 2
+  fm_pr_private_file_valid "$path" 600 "$device" || return 1
+  {
+    IFS= read -r version \
+      && IFS= read -r home \
+      && IFS= read -r task \
+      && IFS= read -r worktree \
+      && IFS= read -r artifact \
+      && IFS= read -r pid \
+      && IFS= read -r token \
+      && IFS= read -r identity \
+      && ! IFS= read -r extra
+  } < "$path" || return 2
+  : "${extra-}"
+  [ "$version" = version=1 ] || return 2
+  case "$home" in home=*) home=${home#home=} ;; *) return 2 ;; esac
+  case "$task" in task=*) task=${task#task=} ;; *) return 2 ;; esac
+  case "$worktree" in worktree=*) worktree=${worktree#worktree=} ;; *) return 2 ;; esac
+  case "$artifact" in artifact=*) artifact=${artifact#artifact=} ;; *) return 2 ;; esac
+  case "$pid" in pid=*) pid=${pid#pid=} ;; *) return 2 ;; esac
+  case "$token" in token=*) token=${token#token=} ;; *) return 2 ;; esac
+  case "$identity" in identity=*) identity=${identity#identity=} ;; *) return 2 ;; esac
+  case "$pid" in ''|*[!0-9]*) return 2 ;; esac
+  case "$token" in ''|*[!A-Za-z0-9._-]*) return 2 ;; esac
+  [ -n "$home" ] && fm_task_id_path_safe "$task" && [ -n "$worktree" ] \
+    && [ -n "$artifact" ] && [ -n "$identity" ] || return 2
+  LAVISH_WORKER_ACTIVE_HOME=$home
+  LAVISH_WORKER_ACTIVE_TASK=$task
+  LAVISH_WORKER_ACTIVE_WORKTREE=$worktree
+  LAVISH_WORKER_ACTIVE_ARTIFACT=$artifact
+  LAVISH_WORKER_ACTIVE_PID=$pid
+  LAVISH_WORKER_ACTIVE_TOKEN=$token
+  LAVISH_WORKER_ACTIVE_IDENTITY=$identity
+}
+
+worker_active_matches_context() {
+  [ "$LAVISH_WORKER_ACTIVE_HOME" = "$FM_HOME" ] \
+    && [ "$LAVISH_WORKER_ACTIVE_TASK" = "$LAVISH_WORKER_TASK" ] \
+    && [ "$LAVISH_WORKER_ACTIVE_WORKTREE" = "$LAVISH_WORKER_WORKTREE" ] \
+    && [ "$LAVISH_WORKER_ACTIVE_ARTIFACT" = "$LAVISH_WORKER_ARTIFACT" ]
+}
+
+worker_active_acquire_locked() {  # <source-id>
+  local id=$1 root active tmp pid identity token active_state claim registration
+  active=$(worker_active_path "$id")
+  claim=$(fm_procevent_claim_path "$id")
+  registration="$(fm_procevent_registry_dir "$STATE")/$id.source"
+  worker_owner_load_locked "$id" || return 2
+  worker_owner_matches_context || return 3
+  if [ -e "$registration" ] || [ -L "$registration" ] \
+    || [ -e "$claim" ] || [ -L "$claim" ]; then
+    return 6
+  fi
+  if [ -e "$active" ] || [ -L "$active" ]; then
+    worker_active_load_locked "$id" || return 4
+    fm_procevent_pid_state "$LAVISH_WORKER_ACTIVE_PID" "$LAVISH_WORKER_ACTIVE_IDENTITY"
+    active_state=$?
+    case "$active_state" in
+      1) rm -f -- "$active" || return 1 ;;
+      0|2|3) return 5 ;;
+      *) return 4 ;;
+    esac
+  fi
+  pid=${BASHPID:-$$}
+  identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+  root=$(fm_procevent_claim_root)
+  tmp=$(umask 077; mktemp "$root/.worker-active.XXXXXX") || return 1
+  token=${tmp##*/}-$pid
+  if printf 'version=1\nhome=%s\ntask=%s\nworktree=%s\nartifact=%s\npid=%s\ntoken=%s\nidentity=%s\n' \
+      "$FM_HOME" "$LAVISH_WORKER_TASK" "$LAVISH_WORKER_WORKTREE" "$LAVISH_WORKER_ARTIFACT" \
+      "$pid" "$token" "$identity" > "$tmp" \
+    && chmod 0600 "$tmp" \
+    && mv -f -- "$tmp" "$active"; then
+    LAVISH_WORKER_POLL_PID=$pid
+    LAVISH_WORKER_POLL_TOKEN=$token
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+worker_active_release_locked() {  # <source-id> <pid> <token>
+  local id=$1 pid=$2 token=$3 active
+  active=$(worker_active_path "$id")
+  [ ! -e "$active" ] && [ ! -L "$active" ] && return 0
+  worker_active_load_locked "$id" || return 1
+  [ "$LAVISH_WORKER_ACTIVE_PID" = "$pid" ] \
+    && [ "$LAVISH_WORKER_ACTIVE_TOKEN" = "$token" ] || return 1
+  rm -f -- "$active"
+}
+
+cmd_process_event_available() {
+  local id=${1-} owner
+  [ "$#" -eq 1 ] || return 1
+  fm_procevent_source_id_valid "$id" || return 1
+  owner=$(worker_owner_path "$id")
+  [ ! -e "$owner" ] && [ ! -L "$owner" ]
 }
 
 reply_lock() { printf '%s/.%s.reply-lock\n' "$(fm_procevent_registry_dir "$STATE")" "$1"; }
@@ -490,6 +738,194 @@ cmd_terminal() {
   return 1
 }
 
+cmd_worker_open() {
+  local task=${1-} artifact=${2-} id claim_status created active_status=1 open_status=0 release_status=0
+  [ "$#" -eq 2 ] || usage
+  command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
+  worker_task_context "$task" "$artifact"
+  id=$(cmd_source_id "$LAVISH_WORKER_ARTIFACT") || exit 1
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock the Lavish review"
+  worker_owner_claim_locked "$id"
+  claim_status=$?
+  created=$LAVISH_WORKER_OWNER_CREATED
+  if [ "$claim_status" -eq 0 ]; then
+    worker_active_acquire_locked "$id"
+    active_status=$?
+  fi
+  fm_procevent_source_lock_release "$id"
+  case "$claim_status" in
+    0) ;;
+    2) die "cannot read the existing foreground worker reservation: $id" ;;
+    3) die "retire the process-event source before delegating this artifact: $id" ;;
+    4) die "artifact is already delegated to another worker: $id" ;;
+    *) die "cannot reserve the artifact for its dedicated worker: $id" ;;
+  esac
+  case "$active_status" in
+    0) ;;
+    4) die "cannot read the foreground poll reservation: $id" ;;
+    5) die "a foreground operation is already active for this artifact: $id" ;;
+    6) die "a process-event poll conflicts with the dedicated worker: $id" ;;
+    *) die "cannot reserve the foreground session open: $id" ;;
+  esac
+  lavish-axi "$LAVISH_WORKER_ARTIFACT" || open_status=$?
+  fm_procevent_source_lock_acquire "$id" || release_status=1
+  if [ "$release_status" -eq 0 ]; then
+    worker_active_release_locked "$id" "$LAVISH_WORKER_POLL_PID" "$LAVISH_WORKER_POLL_TOKEN" \
+      || release_status=1
+    if [ "$open_status" -ne 0 ] && [ "$created" -eq 1 ] && [ "$release_status" -eq 0 ]; then
+      worker_owner_release_locked "$id" || release_status=1
+    fi
+    fm_procevent_source_lock_release "$id"
+  fi
+  [ "$release_status" -eq 0 ] || die "cannot release the foreground session-open reservation: $id"
+  [ "$open_status" -eq 0 ] || die "cannot open or resume the Lavish session"
+  printf 'worker-owned: %s\n' "$id"
+  printf 'task: %s\n' "$LAVISH_WORKER_TASK"
+  printf 'artifact: %s\n' "$LAVISH_WORKER_ARTIFACT"
+}
+
+cmd_worker_poll_common() {  # <plain|reply> <task-id> <artifact>
+  local mode=$1 task=$2 artifact=$3 id acquire_status response reply_stage='' reply_with_sentinel reply=''
+  local poll_status=0 terminal=0 release_status=0
+  command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
+  worker_task_context "$task" "$artifact"
+  id=$(cmd_source_id "$LAVISH_WORKER_ARTIFACT") || exit 1
+  if [ "$mode" = reply ]; then
+    reply_stage=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-lavish-worker-reply.XXXXXX") \
+      || die "cannot stage the worker reply"
+    if ! stage_agent_reply "$reply_stage"; then
+      rm -f -- "$reply_stage"
+      die "worker reply must be nonempty, NUL-free, and at most $AGENT_REPLY_MAX_BYTES bytes"
+    fi
+    reply_with_sentinel=$(cat -- "$reply_stage"; printf '\034')
+    reply=${reply_with_sentinel%$'\034'}
+    rm -f -- "$reply_stage"
+  fi
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock the Lavish review"
+  worker_active_acquire_locked "$id"
+  acquire_status=$?
+  fm_procevent_source_lock_release "$id"
+  case "$acquire_status" in
+    0) ;;
+    2) die "artifact has no dedicated worker reservation; run worker-open first: $id" ;;
+    3) die "artifact is delegated to another worker: $id" ;;
+    4) die "cannot read the foreground poll reservation: $id" ;;
+    5) die "a foreground poll is already active for this artifact: $id" ;;
+    6) die "a process-event poll conflicts with the dedicated worker: $id" ;;
+    *) die "cannot reserve the foreground poll: $id" ;;
+  esac
+  if ! response=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-lavish-worker-result.XXXXXX"); then
+    if fm_procevent_source_lock_acquire "$id"; then
+      worker_active_release_locked "$id" "$LAVISH_WORKER_POLL_PID" "$LAVISH_WORKER_POLL_TOKEN" >/dev/null 2>&1 || true
+      fm_procevent_source_lock_release "$id"
+    fi
+    die "cannot stage the foreground poll result"
+  fi
+  if [ "$mode" = reply ]; then
+    poll_loop "$LAVISH_WORKER_ARTIFACT" "$reply" > "$response" || poll_status=$?
+  else
+    poll_loop "$LAVISH_WORKER_ARTIFACT" > "$response" || poll_status=$?
+  fi
+  cat -- "$response" || poll_status=1
+  cmd_terminal "$response" >/dev/null 2>&1 && terminal=1
+  fm_procevent_source_lock_acquire "$id" || release_status=1
+  if [ "$release_status" -eq 0 ]; then
+    worker_active_release_locked "$id" "$LAVISH_WORKER_POLL_PID" "$LAVISH_WORKER_POLL_TOKEN" \
+      || release_status=1
+    if [ "$terminal" -eq 1 ] && [ "$release_status" -eq 0 ]; then
+      worker_owner_release_locked "$id" || release_status=1
+    fi
+    fm_procevent_source_lock_release "$id"
+  fi
+  rm -f -- "$response"
+  [ "$release_status" -eq 0 ] || die "cannot release the foreground poll reservation: $id"
+  return "$poll_status"
+}
+
+cmd_worker_poll() {
+  [ "$#" -eq 2 ] || usage
+  cmd_worker_poll_common plain "$1" "$2"
+}
+
+cmd_worker_reply() {
+  [ "$#" -eq 2 ] || usage
+  cmd_worker_poll_common reply "$1" "$2"
+}
+
+cmd_worker_end() {
+  local task=${1-} artifact=${2-} id active_status end_status=0 release_status=0
+  [ "$#" -eq 2 ] || usage
+  command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
+  worker_task_context "$task" "$artifact"
+  id=$(cmd_source_id "$LAVISH_WORKER_ARTIFACT") || exit 1
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock the Lavish review"
+  if [ ! -e "$(worker_owner_path "$id")" ] && [ ! -L "$(worker_owner_path "$id")" ]; then
+    fm_procevent_source_lock_release "$id"
+    printf 'already-finished: %s\n' "$id"
+    return 0
+  fi
+  worker_active_acquire_locked "$id"
+  active_status=$?
+  fm_procevent_source_lock_release "$id"
+  case "$active_status" in
+    0) ;;
+    2) die "cannot read the dedicated worker reservation: $id" ;;
+    3) die "artifact is delegated to another worker: $id" ;;
+    4) die "cannot read the foreground poll reservation: $id" ;;
+    5) die "cannot end while a foreground poll may still be active: $id" ;;
+    6) die "a process-event poll conflicts with the dedicated worker: $id" ;;
+    *) die "cannot reserve the foreground session end: $id" ;;
+  esac
+  lavish-axi end "$LAVISH_WORKER_ARTIFACT" || end_status=$?
+  fm_procevent_source_lock_acquire "$id" || release_status=1
+  if [ "$release_status" -eq 0 ]; then
+    worker_active_release_locked "$id" "$LAVISH_WORKER_POLL_PID" "$LAVISH_WORKER_POLL_TOKEN" \
+      || release_status=1
+    if [ "$end_status" -eq 0 ] && [ "$release_status" -eq 0 ]; then
+      worker_owner_release_locked "$id" || release_status=1
+    fi
+    fm_procevent_source_lock_release "$id"
+  fi
+  [ "$release_status" -eq 0 ] || die "cannot release the foreground session-end reservation: $id"
+  [ "$end_status" -eq 0 ] || die "cannot end the Lavish session"
+  printf 'worker-ended: %s\n' "$id"
+}
+
+cmd_worker_status() {
+  local artifact=${1-} id active active_state
+  [ "$#" -eq 1 ] || usage
+  id=$(cmd_source_id "$artifact") || exit 1
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock the Lavish review"
+  if [ ! -e "$(worker_owner_path "$id")" ] && [ ! -L "$(worker_owner_path "$id")" ]; then
+    fm_procevent_source_lock_release "$id"
+    printf 'worker-owner: none\n'
+    return 0
+  fi
+  if ! worker_owner_load_locked "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "cannot read the dedicated worker reservation: $id"
+  fi
+  active=$(worker_active_path "$id")
+  active_state=none
+  if [ -e "$active" ] || [ -L "$active" ]; then
+    if worker_active_load_locked "$id"; then
+      fm_procevent_pid_state "$LAVISH_WORKER_ACTIVE_PID" "$LAVISH_WORKER_ACTIVE_IDENTITY"
+      case "$?" in
+        0) active_state=live ;;
+        1) active_state=stopped ;;
+        2) active_state=uncertain ;;
+        3) active_state=orphaned ;;
+        *) active_state=unknown ;;
+      esac
+    else
+      active_state=unknown
+    fi
+  fi
+  printf 'worker-owner: task=%s active=%s\n' "$LAVISH_WORKER_OWNER_TASK" "$active_state"
+  printf 'artifact: %s\n' "$LAVISH_WORKER_OWNER_ARTIFACT"
+  fm_procevent_source_lock_release "$id"
+}
+
 # Print `key<TAB>answer<TAB>label[<TAB>mode]` for every structured choice the
 # captain submitted in a captured result; the optional mode column relays the
 # card's declared close mode (`done` or `release`) to the keyed-answer intake. The published response frames queued feedback as
@@ -572,14 +1008,21 @@ cmd_answers() {
 }
 
 case "${1-}" in
-  arm)       shift; cmd_arm "$@" ;;
-  arm-reply) shift; cmd_arm_reply "$@" ;;
-  retire)    shift; cmd_retire "$@" ;;
-  poll)      shift; cmd_poll "$@" ;;
-  source-id) shift; cmd_source_id "$@" ;;
-  classify)  shift; cmd_classify "$@" ;;
-  terminal)  shift; cmd_terminal "$@" ;;
-  answers)   shift; cmd_answers "$@" ;;
-  ''|-h|--help|help) usage ;;
+  arm)                           shift; cmd_arm "$@" ;;
+  arm-reply)                     shift; cmd_arm_reply "$@" ;;
+  worker-open)                   shift; cmd_worker_open "$@" ;;
+  worker-poll)                   shift; cmd_worker_poll "$@" ;;
+  worker-reply)                  shift; cmd_worker_reply "$@" ;;
+  worker-end)                    shift; cmd_worker_end "$@" ;;
+  worker-status)                 shift; cmd_worker_status "$@" ;;
+  source-reservation-capability) printf 'exclusive-worker-v1\n' ;;
+  process-event-available)       shift; cmd_process_event_available "$@" ;;
+  retire)                        shift; cmd_retire "$@" ;;
+  poll)                          shift; cmd_poll "$@" ;;
+  source-id)                     shift; cmd_source_id "$@" ;;
+  classify)                      shift; cmd_classify "$@" ;;
+  terminal)                      shift; cmd_terminal "$@" ;;
+  answers)                       shift; cmd_answers "$@" ;;
+  ''|-h|--help|help)             usage ;;
   *) die "unknown command: $1" ;;
 esac

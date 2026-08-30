@@ -1,15 +1,14 @@
 ---
 name: process-event-sources
 description: >-
-  Agent-only procedure for registered process-to-event sources and their wakes.
-  Use before arming a long-polling source firstmate owns, before registering a
+  Agent-only procedure for delegated foreground Lavish reviews and registered
+  process-to-event sources. Use before commissioning a reviewable Lavish
+  artifact, before arming a long-polling source, before registering a
   deterministic condition->action watch, and on any
-  `procevent <adapter> <source-id> <sequence>` check wake.
-  Owns the arming commands, the condition->action eligibility boundary, the
-  durable result read, which wakes must be routed to their adapter instead of
-  acknowledged generically, the handled acknowledgement contract, the one-owner
-  rule, the precise durability boundary, and the Lavish adapter's loss
-  limitation.
+  `procevent <adapter> <source-id> <sequence>` check wake. Owns the delegation
+  trigger, foreground-worker lifecycle, arming commands, condition->action
+  eligibility boundary, durable result read, adapter routing, handled
+  acknowledgement, one-owner rule, and Lavish loss limitation.
 user-invocable: false
 metadata:
   internal: true
@@ -17,25 +16,51 @@ metadata:
 
 # process-event-sources
 
-Load this before arming a long-polling source, before registering a deterministic condition->action watch, and whenever a `check:` wake carries `procevent <adapter> <source-id> <sequence>`.
+Load this before commissioning a reviewable Lavish artifact, before arming a long-polling source, before registering a deterministic condition->action watch, and whenever a `check:` wake carries `procevent <adapter> <source-id> <sequence>`.
 
-The runner exists so a blocking external process never holds firstmate's conversational turn.
-Firstmate registers a source, keeps working, and is woken when that process completes.
+The process-event runner exists so a blocking external process never holds a firstmate-owned conversational turn.
+It is for genuinely supervisor-owned waits and waits with no live worker, not for moving a delegated task's feedback loop back into its parent.
+
+## Delegated Lavish review
+
+When a Lavish artifact will need iterative feedback, edits, or answers and a live worker can own that work, the firstmate or secondmate commissions one ordinary worker or scout dedicated to the artifact.
+The parent remains free to supervise and dispatch unrelated work, never opens or polls the delegated artifact itself, and never falls back to the process-event adapter for it.
+If an existing implementation or investigation worker is already the artifact's natural owner, keep that same worker dedicated through review rather than spawning a second owner.
+
+The task instructions must name one artifact path inside the worker's recorded isolated worktree, require the installed public `lavish` skill, and require these repository-owned boundaries:
+
+```sh
+bin/fm-procevent-lavish.sh worker-open <task-id> <artifact.html>
+bin/fm-procevent-lavish.sh worker-poll <task-id> <artifact.html>
+printf '%s' "$reply" | bin/fm-procevent-lavish.sh worker-reply <task-id> <artifact.html>
+bin/fm-procevent-lavish.sh worker-end <task-id> <artifact.html>
+```
+
+`worker-open` is the explicit one-owner transfer: it validates the task and isolated worktree, reserves the canonical artifact for that task, and opens or resumes exactly one Lavish session.
+If that artifact already has a process-event source, the parent retires the source before delegation; the worker command refuses to displace it.
+Once the worker owns the artifact, both process-event registration and a second foreground poll are refused.
+The worker leaves each `worker-poll` or `worker-reply` call running in its own foreground, applies returned feedback in the same task context, and repeats on the same file.
+Ordinary feedback stays inside that worker and produces no status event; only a genuine product, scope, destructive, irreversible, or security-sensitive decision uses the normal `needs-decision` status path.
+The worker remains dedicated until the browser returns final feedback from `Send & End`, which releases the reservation automatically, or until explicit review completion runs `worker-end`.
+It must not reopen a session ended by the reviewer unless a new review is explicitly requested.
+
+On a stopped or unresponsive dedicated worker, load `stuck-crewmate-recovery` and preserve the same task, worktree, artifact, and worker session.
+Use `worker-status <artifact.html>` before resuming: a live, uncertain, or orphaned poll means no replacement poll may start; after the old poll is proven gone, the recovered same task reruns `worker-poll` or `worker-reply` without creating another artifact or process-event source.
+The durable worker reservation survives that ordinary recovery, while the active-poll identity prevents overlap.
 
 ## Arming a source
 
 Use the adapter, not the generic runner, for a real source.
-For a Lavish review artifact firstmate owns (a live investigating scout should host its own loop):
+For a Lavish review artifact that the firstmate owns directly, such as the stable Bearings board, or a wait that has no live worker:
 
 ```sh
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
-A Lavish feedback loop has one agent owner at a time.
-When a live worker is iterating the artifact, route each result to that same worker by source id, sequence, and result path; otherwise the current firstmate or secondmate owns the loop.
+A process-event Lavish loop has one supervisor owner at a time.
 The owner applies or answers the feedback and performs the acknowledgement-and-reply transition below in the `FM_HOME` that owns the source.
-The supervisor must not perform that transition too.
-The blocking poll itself always remains adapter-owned.
+A live delegated worker never shares or receives results from this path.
+The blocking poll remains adapter-owned.
 
 When a source carries captain answers to captain-held tasks, bind it BEFORE arming it, so it can never produce an answer that has nowhere to go:
 
@@ -66,16 +91,17 @@ When in doubt, arm only the condition half as an ordinary check and keep the act
 
 Two rules the commands cannot enforce for you:
 
-- **Never run the source's blocking command yourself in a conversational turn.** That is the problem the runner exists to remove, and for a destructive source it also consumes the result where nothing durable can capture it.
+- **Never run a registered source's blocking command in a conversational turn.** That is the problem the runner exists to remove, and for a destructive source it also consumes the result where nothing durable can capture it; a dedicated Lavish worker instead uses the guarded `worker-poll` foreground path above.
 - **A source is a wait on an external process, not a task.** It gets no task metadata and no backlog entry. If the wait itself needs tracking, file it as its own work item.
 
 ## Handling a wake
 
-### Continuous Lavish conversation
+### Supervisor-owned Lavish conversation
 
 For a `procevent lavish <source-id> <sequence>` result, first run both `classify` and `terminal` through `bin/fm-procevent-lavish.sh` rather than inferring lifecycle from prompt prose.
-Treat every ordinary `feedback` result as one turn in a continuing conversation, whether it requires an artifact edit or only an answer.
-If a worker owns the artifact, route the result path to that same worker and require it to return through the following transition; do not merely tell it not to poll.
+Treat every ordinary `feedback` result as one turn in a continuing supervisor-owned conversation, whether it requires an artifact edit or only an answer.
+Do not route captured results to a worker turn by turn.
+If the review now requires a live worker's judgment, retire this source, commission the dedicated worker, and let `worker-open` establish the new owner before any foreground poll.
 The direct `lavish-axi poll ... --agent-reply` command in Lavish's `next_step` is for a foreground loop and must not be run alongside this adapter-owned source.
 
 After applying the feedback and preparing one concise reply, claim the result before producing that external effect:

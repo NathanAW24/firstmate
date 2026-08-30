@@ -997,6 +997,176 @@ PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HREPLY_OWNER_A" \
   "$ROOT/bin/fm-procevent-lavish.sh" retire "$REPLY_OWNER_ART" >/dev/null
 pass "reply arming preserves one owner and refuses a competing home"
 
+# --- delegated Lavish reviews stay in one foreground worker -----------------
+# This fake exposes the public open/poll/end shape and makes each poll wait on a
+# numbered release file. The caller can therefore prove that a worker poll is
+# foreground-blocking, that a second poll cannot overlap it, and that the same
+# artifact/session/task reservation survives an interrupted wait.
+LAVISH_WORKER_BIN=$(fm_fakebin "$TMP_ROOT/lavish-worker-stub")
+cat > "$LAVISH_WORKER_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1-}" in
+  poll)
+    artifact=${2-}
+    lock="$LAVISH_WORKER_LOG.active"
+    if ! mkdir "$lock" 2>/dev/null; then
+      printf 'overlap\n' >> "$LAVISH_WORKER_LOG"
+      exit 9
+    fi
+    cleanup() { rmdir "$lock" 2>/dev/null || true; }
+    trap 'cleanup; exit 143' TERM INT HUP
+    count=1
+    [ ! -f "$LAVISH_WORKER_LOG.count" ] || count=$(( $(cat "$LAVISH_WORKER_LOG.count") + 1 ))
+    printf '%s\n' "$count" > "$LAVISH_WORKER_LOG.count"
+    printf 'poll:%s:%s:%s\n' "$count" "${4-}" "$artifact" >> "$LAVISH_WORKER_LOG"
+    printf '%s\n' "$$" > "$LAVISH_WORKER_LOG.pid.$count"
+    printf 'ready\n' > "$LAVISH_WORKER_LOG.ready.$count"
+    while [ ! -e "$LAVISH_WORKER_LOG.release.$count" ]; do sleep 0.02; done
+    cat "$LAVISH_WORKER_LOG.release.$count"
+    cleanup
+    ;;
+  end)
+    printf 'end:%s\n' "${2-}" >> "$LAVISH_WORKER_LOG"
+    ;;
+  *)
+    printf 'open:%s\n' "${1-}" >> "$LAVISH_WORKER_LOG"
+    printf 'served: %s\n' "${1-}"
+    ;;
+esac
+SH
+chmod +x "$LAVISH_WORKER_BIN/lavish-axi"
+
+HWORKER="$TMP_ROOT/hworker"; new_home "$HWORKER"
+WORKER_WT="$TMP_ROOT/worker-wt"
+mkdir -p "$WORKER_WT/.lavish"
+WORKER_ART="$WORKER_WT/.lavish/review.html"
+WORKER_END_ART="$WORKER_WT/.lavish/explicit-end.html"
+WORKER_CROSS_HOME_ART="$WORKER_WT/.lavish/cross-home.html"
+printf '<h1>delegated review</h1>\n' > "$WORKER_ART"
+printf '<h1>explicit completion</h1>\n' > "$WORKER_END_ART"
+printf '<h1>cross-home exclusion</h1>\n' > "$WORKER_CROSS_HOME_ART"
+printf 'kind=scout\nworktree=%s\n' "$WORKER_WT" > "$HWORKER/state/review-worker.meta"
+printf 'kind=secondmate\nworktree=%s\n' "$WORKER_WT" > "$HWORKER/state/parent-mate.meta"
+LAVISH_WORKER_LOG="$TMP_ROOT/lavish-worker-log"
+export LAVISH_WORKER_LOG
+worker_lavish() {
+  (cd "$WORKER_WT" && PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+    "$ROOT/bin/fm-procevent-lavish.sh" "$@")
+}
+
+# The coordinator cannot claim the foreground-worker interface itself.
+parent_open_status=0
+parent_open_out=$(worker_lavish worker-open parent-mate "$WORKER_ART" 2>&1) || parent_open_status=$?
+[ "$parent_open_status" -ne 0 ] || fail "a secondmate claimed its own foreground review"
+assert_contains "$parent_open_out" "must be a ship or scout task" \
+  "the worker boundary did not refuse the parent secondmate"
+
+# A pre-existing parent-owned source must be explicitly retired before the
+# worker can take ownership; after transfer, registration is refused in the
+# opposite direction at the generic public register boundary.
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$WORKER_ART" >/dev/null
+worker_open_status=0
+worker_open_out=$(worker_lavish worker-open review-worker "$WORKER_ART" 2>&1) || worker_open_status=$?
+[ "$worker_open_status" -ne 0 ] || fail "worker-open displaced an existing process-event source"
+assert_contains "$worker_open_out" "retire the process-event source" \
+  "worker-open did not require an explicit ownership transfer"
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+  "$ROOT/bin/fm-procevent-lavish.sh" retire "$WORKER_ART" >/dev/null
+worker_lavish worker-open review-worker "$WORKER_ART" >/dev/null
+assert_contains "$(worker_lavish worker-status "$WORKER_ART")" \
+  "worker-owner: task=review-worker active=none" \
+  "worker-open did not preserve the dedicated task identity"
+worker_arm_status=0
+worker_arm_out=$(PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$WORKER_ART" 2>&1) || worker_arm_status=$?
+[ "$worker_arm_status" -ne 0 ] || fail "process-event arm displaced the dedicated worker"
+assert_contains "$worker_arm_out" "reserved for a foreground worker" \
+  "process-event refusal did not identify the foreground owner"
+
+worker_lavish worker-poll review-worker "$WORKER_ART" > "$TMP_ROOT/worker-first-result" &
+worker_poll_pid=$!
+wait_for "$LAVISH_WORKER_LOG.ready.1" || fail "the dedicated worker poll did not block in the foreground"
+assert_contains "$(worker_lavish worker-status "$WORKER_ART")" "active=live" \
+  "the active foreground wait was not visible through worker-status"
+overlap_status=0
+overlap_out=$(worker_lavish worker-poll review-worker "$WORKER_ART" 2>&1) || overlap_status=$?
+[ "$overlap_status" -ne 0 ] || fail "a second foreground poll overlapped the first"
+assert_contains "$overlap_out" "already active" "the duplicate foreground poll refusal was not explicit"
+printf 'session:\n  file: %s\n  status: feedback\nprompts[1]{text}:\n  first turn\n' \
+  "$WORKER_ART" > "$LAVISH_WORKER_LOG.release.1"
+wait "$worker_poll_pid" || fail "the first foreground poll did not return its feedback"
+assert_contains "$(cat "$TMP_ROOT/worker-first-result")" "first turn" \
+  "foreground feedback did not return directly to the dedicated worker"
+assert_contains "$(worker_lavish worker-status "$WORKER_ART")" "active=none" \
+  "a completed nonterminal turn did not retain an idle worker owner"
+[ ! -d "$HWORKER/state/procevent-inbox" ] \
+  || fail "a foreground worker turn created a process-event result inbox"
+
+# An interrupted foreground call leaves the durable artifact owner intact. Once
+# the old poll process is gone, the same task can resume the same artifact and
+# no replacement source or task is created.
+worker_lavish worker-poll review-worker "$WORKER_ART" > "$TMP_ROOT/worker-interrupted-result" &
+worker_poll_pid=$!
+wait_for "$LAVISH_WORKER_LOG.ready.2" || fail "the recoverable foreground poll did not start"
+interrupted_child=$(cat "$LAVISH_WORKER_LOG.pid.2")
+kill "$interrupted_child"
+interrupted_status=0
+wait "$worker_poll_pid" || interrupted_status=$?
+[ "$interrupted_status" -ne 0 ] || fail "the interrupted foreground poll reported success"
+assert_contains "$(worker_lavish worker-status "$WORKER_ART")" \
+  "worker-owner: task=review-worker active=none" \
+  "poll interruption lost the task, artifact, or recoverable owner"
+
+printf '%s' 'applied in the same worker' | worker_lavish worker-reply review-worker "$WORKER_ART" \
+  > "$TMP_ROOT/worker-final-result" &
+worker_poll_pid=$!
+wait_for "$LAVISH_WORKER_LOG.ready.3" || fail "the recovered worker did not resume polling"
+printf 'session:\n  file: %s\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{text}:\n  final turn\n' \
+  "$WORKER_ART" > "$LAVISH_WORKER_LOG.release.3"
+wait "$worker_poll_pid" || fail "the terminal foreground poll did not return final feedback"
+assert_contains "$(cat "$TMP_ROOT/worker-final-result")" "final turn" \
+  "Send & End final feedback did not return to the dedicated worker"
+assert_contains "$(worker_lavish worker-status "$WORKER_ART")" "worker-owner: none" \
+  "Send & End did not release the dedicated worker reservation"
+[ "$(grep -c '^open:' "$LAVISH_WORKER_LOG")" -eq 1 ] \
+  || fail "foreground recovery opened more than one Lavish session"
+[ "$(grep -c '^poll:' "$LAVISH_WORKER_LOG")" -eq 3 ] \
+  || fail "foreground recovery did not use exactly one poll at a time"
+assert_not_contains "$(cat "$LAVISH_WORKER_LOG")" "overlap" \
+  "the foreground worker path reached the fake poll concurrently"
+
+worker_lavish worker-open review-worker "$WORKER_END_ART" >/dev/null
+worker_lavish worker-end review-worker "$WORKER_END_ART" >/dev/null
+assert_contains "$(worker_lavish worker-status "$WORKER_END_ART")" "worker-owner: none" \
+  "explicit review completion did not release the worker reservation"
+assert_contains "$(cat "$LAVISH_WORKER_LOG")" "end:$WORKER_END_ART" \
+  "explicit review completion did not end the Lavish session"
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$WORKER_END_ART" >/dev/null
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER" \
+  "$ROOT/bin/fm-procevent-lavish.sh" retire "$WORKER_END_ART" >/dev/null
+
+# A source registered in another home before delegation is also barred from
+# claiming the artifact after the worker reservation commits.
+HWORKER_FOREIGN="$TMP_ROOT/hworker-foreign"; new_home "$HWORKER_FOREIGN"
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER_FOREIGN" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$WORKER_CROSS_HOME_ART" >/dev/null
+worker_lavish worker-open review-worker "$WORKER_CROSS_HOME_ART" >/dev/null
+foreign_start_status=0
+foreign_start_out=$(PATH="$LAVISH_WORKER_BIN:$PATH" pe "$HWORKER_FOREIGN" start \
+  "$(PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER_FOREIGN" \
+    "$ROOT/bin/fm-procevent-lavish.sh" source-id "$WORKER_CROSS_HOME_ART")" 2>&1) \
+  || foreign_start_status=$?
+[ "$foreign_start_status" -ne 0 ] || fail "a foreign registered source claimed the delegated artifact"
+assert_contains "$foreign_start_out" "reserved for a foreground worker" \
+  "claim acquisition did not enforce the cross-home worker reservation"
+worker_lavish worker-end review-worker "$WORKER_CROSS_HOME_ART" >/dev/null
+PATH="$LAVISH_WORKER_BIN:$PATH" FM_HOME="$HWORKER_FOREIGN" \
+  "$ROOT/bin/fm-procevent-lavish.sh" retire "$WORKER_CROSS_HOME_ART" >/dev/null
+pass "delegated Lavish reviews transfer once, poll in one worker, recover in place, and clean up terminally"
+
 # The public arm boundary refuses invalid retry intervals before it publishes a
 # source registration, rather than arming a listener that can only fail later.
 HINVALID="$TMP_ROOT/hinvalid"; new_home "$HINVALID"
@@ -1640,6 +1810,8 @@ assert_contains "$adapter_help" "arm-reply" \
   "the adapter's help publishes the one-shot reply interface"
 assert_contains "$adapter_help" "can lose the reply" \
   "the adapter's help states the one-shot reply crash boundary"
+assert_contains "$adapter_help" "worker-open" \
+  "the adapter's help publishes the dedicated foreground-worker interface"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \
