@@ -82,6 +82,16 @@
 # go silent. An unhandled result stays eligible for bounded re-announcement on
 # every reconcile in both modes, exactly as before.
 #
+# A source adapter may also publish a foreground-reservation capability.
+# `source-reservation-capability` must print exactly `exclusive-worker-v1`, and
+# `process-event-available <source-id>` must then exit 0 only when registration
+# or claim is allowed. The runner checks that seam while holding the canonical
+# source lock both before registration publication and before claim acquisition.
+# An adapter without the exact capability remains unaffected. An advertised
+# capability whose availability check fails refuses the process-event path.
+# This lets an adapter transfer one source to a foreground worker without
+# teaching the generic runner anything about that source's domain.
+#
 # Keyed captain answers are adapter-owned through one more seam of the same kind,
 # and this runner still decides nothing about them. Some sources carry the
 # captain's answer to a captain-held task. What such an answer MEANS is owned
@@ -127,9 +137,22 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,111p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,121p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
+
+# Ask an adapter that advertises foreground reservations whether a process-event
+# registration or claim is currently allowed. This runs only while the caller
+# holds the source lock, so an adapter's worker claim and this check form one
+# ownership boundary. Adapters without the exact capability remain available.
+adapter_process_event_available() {  # <adapter> <source-id>
+  local script capability
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 0
+  capability=$("$script" source-reservation-capability 2>/dev/null) || return 0
+  [ "$capability" = exclusive-worker-v1 ] || return 1
+  "$script" process-event-available "$2" >/dev/null 2>&1
+}
 
 # Ask the source's own adapter whether a captured result ends the source. Exit 0
 # is the only terminal verdict; everything else - including a missing adapter
@@ -231,6 +254,10 @@ cmd_register() {
   done
   [ -f "$(adapter_script "$adapter")" ] || die "no installed adapter for: $adapter"
   fm_procevent_source_lock_acquire "$id" || die "cannot lock the source"
+  if ! adapter_process_event_available "$adapter" "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "source is reserved for a foreground worker: $id"
+  fi
   if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$@"; then
     fm_procevent_source_lock_release "$id"
     die "cannot publish the registration"
@@ -246,13 +273,21 @@ cmd_register() {
 # acquisition to reclaim. Foreign live or uncertain ownership is never
 # displaced.
 cmd_restart() {
-  local id=${1-} claim_state owner pid token identity stop_state
+  local id=${1-} adapter claim_state owner pid token identity stop_state
   [ "$#" -eq 1 ] || usage
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   fm_procevent_source_lock_acquire "$id" || die "cannot lock the source"
   if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
     fm_procevent_source_lock_release "$id"
     die "source is not registered: $id"
+  fi
+  if ! adapter=$(read_adapter "$id") || ! fm_procevent_adapter_valid "$adapter"; then
+    fm_procevent_source_lock_release "$id"
+    die "registration names an invalid adapter"
+  fi
+  if ! adapter_process_event_available "$adapter" "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "source is reserved for a foreground worker: $id"
   fi
   fm_procevent_claim_state_locked "$id"
   claim_state=$?
@@ -387,6 +422,10 @@ cmd_start() {
   if ! fm_procevent_adapter_valid "$adapter"; then
     fm_procevent_source_lock_release "$id"
     die "registration names an invalid adapter"
+  fi
+  if ! adapter_process_event_available "$adapter" "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "source is reserved for a foreground worker: $id"
   fi
   if ! read_argv "$id"; then
     fm_procevent_source_lock_release "$id"

@@ -9,7 +9,8 @@ Verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 install
 Generic keyed-answer feed verified on 2026-08-16 on the same platform, against the same published poll response shape.
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 One-shot Lavish agent replies verified on 2026-08-25 on Linux 6.6.87.2-microsoft-standard-WSL2 x86_64 with `lavish-axi` 0.1.53 installed.
-The continuous Lavish conversation transition was reverified on 2026-08-26 on the same platform and version through a disposable live session and the public process-event adapter.
+The continuous supervisor-owned Lavish conversation transition was reverified on 2026-08-26 on the same platform and version through a disposable live session and the public process-event adapter.
+Dedicated foreground-worker ownership was verified on 2026-08-30 on the same platform and version through the public worker and process-event adapter commands.
 
 ## The published Lavish poll interface the adapter wraps
 
@@ -46,32 +47,39 @@ $ lavish-axi poll --help | head -1
 Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 ```
 
-## Continuous conversation transition
+## Delegated foreground ownership
 
-A disposable live artifact established the negative control and the smallest counterfactual through `chrome-devtools-axi`, `lavish-axi` 0.1.53, and an isolated process-event home.
-After ordinary feedback `cycle one` was captured and acknowledged without `arm-reply`, the public source listing showed `OWNER none` and `PENDING 0`, while the browser showed only the `YOU` bubble plus `Working...` with both send controls disabled.
-This reproduces the missing agent bubble and missing next wait without changing the artifact owner's lifecycle or the Lavish session.
+The failing control used the public `arm` and `reconcile` commands with an isolated home and a fake implementation of the published `lavish-axi poll` interface.
+`reconcile` returned immediately with `started=1`, `list` reported the Lavish source as `OWNER live`, and feedback appeared later under `state/procevent-inbox/`.
+That proves the initiating trigger is choosing the process-event path for a delegated artifact: the poll and result are owned by the supervisor's home, so every feedback turn must pass back through that parent even when a worker applies the edits.
+The masking condition is that the adapter remains healthy and nonblocking, which makes the parent-mediated path look operational.
+The visible symptom is loss of one continuous worker conversation: the parent receives each result and becomes responsible for routing every turn.
 
-The same session then used the public transition:
+The smallest counterfactual changed only the wait boundary.
+The same fake poll run directly in the foreground blocked for 316 ms until its trigger and returned the feedback to its caller, while no process-event state was created.
+The installed `lavish-axi` 0.1.53 help independently says to keep the poll in the foreground by default and let it return feedback directly to the agent.
+PR 5 proved that the background adapter can carry a continuous conversation correctly, including two feedback/reply cycles and `Send & End`; that disconfirms an adapter transport defect but does not address the misplaced owner.
+The earliest meaningful divergence is therefore ownership selection before polling, not reply delivery after capture.
 
-```sh
-$ printf '%s' 'Cycle one applied.' | \
-    FM_HOME="$test_home" FM_PROCEVENT_CLAIM_ROOT="$claims" \
-    bin/fm-procevent-lavish.sh arm-reply "$artifact"
-restarted: lavish-b26ec7301c4dad99
-reply-armed: lavish-b26ec7301c4dad99
-artifact: /.../continuous-loop.html
+The new public worker path makes that boundary executable:
 
-$ FM_HOME="$test_home" FM_PROCEVENT_CLAIM_ROOT="$claims" \
-    bin/fm-procevent.sh list
-SOURCE                       ADAPTER      OWNER      PENDING
-lavish-b26ec7301c4dad99      lavish       live       0
+```text
+$ bin/fm-procevent-lavish.sh worker-open review-worker .lavish/review.html
+worker-owned: lavish-...
+task: review-worker
+artifact: /.../review-worktree/.lavish/review.html
+
+$ bin/fm-procevent-lavish.sh worker-status .lavish/review.html
+worker-owner: task=review-worker active=none
+artifact: /.../review-worktree/.lavish/review.html
+
+$ bin/fm-procevent-lavish.sh arm .lavish/review.html
+error: source is reserved for a foreground worker: lavish-...
 ```
 
-The browser then showed alternating `YOU cycle one` and `AGENT Cycle one applied.` bubbles with both send controls enabled.
-A second ordinary prompt and `arm-reply` produced `YOU cycle two` and `AGENT Cycle two applied.` in the same Conversation panel and again left one live source with no pending result.
-A final `Send & End` returned one third result with `status: feedback`, `session_ended: true`, and `ended_by: user`; after acknowledgement, `reconcile` reported `started=0` and `list` reported `no sources registered`.
-The setup is repeatable with any disposable HTML file and isolated `FM_HOME`: omitting the acknowledgement-and-`arm-reply` transition reproduces the symptom, while adding it restores both the browser reply and the next wait.
+`tests/fm-procevent.test.sh` drives `worker-open`, a blocking `worker-poll`, a reply-bearing `worker-reply`, `worker-status`, and `worker-end` through those public commands.
+It proves an existing process-event source must be retired before transfer, process-event registration is refused afterward, a simultaneous foreground poll is refused, ordinary feedback returns directly with no process-event inbox, an interrupted wait retains the same task and artifact for retry, final `Send & End` feedback releases ownership, and explicit completion invokes Lavish `end` before release.
+The fake records one session open and the same canonical artifact on all three poll attempts, while an external overlap marker remains absent.
 
 ## Why an ended Lavish review is terminal
 
@@ -124,7 +132,8 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
 | registration-generation retirement | an old terminal runner preserves a concurrently replaced registration and releases ownership so the replacement runs independently; injected registration-removal failure retains a terminal claim, performs no second poll, and completes idempotently once removal recovers |
 | one `Send & End`, one result | an armed Lavish source driven against a stand-in for the published poll, which delivers the final `session_ended` feedback once and empty ended sessions afterward, polls exactly once, captures exactly one result, publishes one distinct event, and retires itself |
-| continuous Lavish conversation | two consecutive cycles through the public `handled` and `arm-reply` interfaces each deliver one literal Conversation reply, expose duplicate handling without authorizing another reply, return to exactly one ordinary reply-free listener, and never overlap pollers; a reply-bearing `Send & End` still retires that registration without another poll; shell-looking text is not executed, and empty, NUL-containing, oversized, concurrent, and foreign-owner attempts are refused |
+| continuous supervisor-owned Lavish conversation | two consecutive cycles through the public `handled` and `arm-reply` interfaces each deliver one literal Conversation reply, expose duplicate handling without authorizing another reply, return to exactly one ordinary reply-free listener, and never overlap pollers; a reply-bearing `Send & End` still retires that registration without another poll; shell-looking text is not executed, and empty, NUL-containing, oversized, concurrent, and foreign-owner attempts are refused |
+| delegated foreground Lavish ownership | public worker commands validate one ship or scout and its isolated worktree, require explicit retirement before transfer, keep one canonical task/artifact reservation across turns and interrupted-poll recovery, return feedback directly without a process-event inbox, reject both a second foreground poll and a process-event arm, release automatically on `Send & End`, and call `lavish-axi end` before explicit release |
 | reply interruption and crash boundary | the exact transient interruption retries as a plain wait without resending the reply, while a result-less failure after the reply-bearing invocation resumes ordinary polling and never repeats the ambiguously consumed reply |
 | reply restart exclusion | fixture pollers take an external overlap marker around their whole lifetime, proving the old generation exits before the reply generation starts, a second reply cannot start while the first is in flight, and a second home's source cannot displace the live owner |
 | bounded re-announcement until handled | a durably captured result with no handled acknowledgement is re-announced by `reconcile` with the same source and sequence on every call - not only the first restart after a crash - and a presented-but-unacknowledged wake resurfaces identically after a simulated replacement session |
@@ -185,7 +194,9 @@ Without this launcher, reconcile would silently fail to start a runner on macOS 
 ## Scope
 
 The runner is domain-neutral and creates no endpoint, task metadata, or backlog item, so the supported primary harnesses and runtime backends are unaffected except through the existing `check` and status-signal wake paths they already consume.
+The dedicated Lavish path is likewise independent of harness and runtime: every verified worker surface runs the same foreground command inside its already-recorded worktree, while dispatch, endpoint supervision, and recovery stay on their existing adapters.
 Adapters extend the runner through `bin/fm-procevent-<adapter>.sh`; the `when` adapter also uses the runner library's locked registration publisher so its private trust state and source registration are serialized under one source boundary.
+An adapter may advertise `exclusive-worker-v1` to make generic registration and claim acquisition consult its foreground reservation under that same source lock; an adapter without that exact capability remains unchanged.
 An adapter's `terminal` command is optional and defaults to keeping the source armed.
 Its `autohandle` command is optional in the same way and defaults to leaving the captured result unacknowledged, so it keeps being announced to a handler exactly as before.
 The optional `self-announcing` declaration changes ordering only for an adapter with its own durable downstream announcement; the operating contract in `docs/configuration.md` owns that boundary.

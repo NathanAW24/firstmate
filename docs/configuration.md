@@ -571,15 +571,21 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 ## Process-to-event sources (state/procevent)
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
-`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` adapts the currently published `lavish-axi poll` interface for both supervisor-owned process events and dedicated foreground workers.
+A review artifact that needs iterative worker judgment is a delegated task, not a supervisor-owned source: one ship or scout owns its canonical artifact, browser session, and foreground poll loop while the firstmate or secondmate remains available for unrelated coordination.
+The adapter's `worker-open`, `worker-poll`, `worker-reply`, `worker-status`, and `worker-end` commands validate that task against its recorded isolated worktree and maintain a machine-wide reservation for the canonical artifact.
+The reservation survives ordinary same-task recovery, rejects a second foreground poll, and makes generic process-event registration and claim acquisition refuse the same artifact; `Send & End` releases it after returning final feedback, while `worker-end` releases it after explicit completion.
+A pre-existing process-event source must be retired before `worker-open` can transfer ownership, and the parent must not re-arm or poll a delegated artifact.
+The adapter header and `--help` own those command mechanics, while `.agents/skills/process-event-sources/SKILL.md` owns the delegation and recovery procedure.
+
+For a genuinely supervisor-owned Lavish wait, including the stable Bearings board or a wait with no live worker, the process-event path remains available.
 That adapter, and only that adapter, retries the one exact transient response a cut-short listener returns while its marks remain available (`error: Lavish Editor poll response was interrupted` with `code: SERVER_ERROR`), up to 12 times at 5 second intervals, so an internal retry never reaches the runner as a captured result.
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 0 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so re-arm a live board once to adopt this retry policy.
-A source-owning worker or secondmate may use the Lavish adapter's `arm-reply` command to stage one nonempty reply of at most 8192 bytes privately and restart the same registered source so its next blocking wait passes that reply as one direct argument.
+Its supervisor owner may use the Lavish adapter's `arm-reply` command to stage one nonempty reply of at most 8192 bytes privately and restart the same registered source so its next blocking wait passes that reply as one direct argument.
 The restart stops and releases only this home's identity-matched generation under the existing source boundary, refuses a live foreign owner or uncertain ownership, and starts no simultaneous poller; a pending or in-flight reply is never overwritten.
 The listener claims the reply before invoking Lavish, every retry after the reply-bearing attempt omits it, and every later source generation uses the unchanged reply-free registration.
 This is intentionally at-most-once for the reply: a crash after the claim but before or during the Lavish call may lose it because no receipt distinguishes "not displayed" from "displayed before interruption", and recovery chooses no duplicate.
-The adapter header and `--help` own the exact command and private-state mechanics.
 
 The `when` adapter (`bin/fm-procevent-when.sh`) turns this channel into a condition->action primitive: it registers a deterministic condition and a deterministic action once, its blocking child polls the condition without waking firstmate, and a stable true fires the action at most once before one terminal outcome is durably captured and published as a wake that remains eligible for re-announcement until handled.
 The (condition, action) spec is stored privately under `state/when/` and hash-bound by a trust record the same way `bin/fm-check-register.sh` binds a custom check, while the spec separately binds the resolved action executable's bytes; a mutated or unregistered spec or a changed action executable is refused before the action runs.
@@ -622,7 +628,8 @@ An unbound source, an adapter with no `answers` command, and a failure on either
 
 Ownership is machine-wide per canonical source, because separate homes can share one underlying source store.
 Claims live under `$XDG_STATE_HOME/firstmate/procevent-claims` (override with `FM_PROCEVENT_CLAIM_ROOT`).
-Each claim binds its home and runner PID to a process identity, unique claim generation, and exact registration-file generation.
+Dedicated Lavish worker reservations and their active-poll identities share that root and the same canonical per-source lock, but they create no process-event registration.
+Each process-event claim binds its home and runner PID to a process identity, unique claim generation, and exact registration-file generation.
 Registration, acquisition, replacement, retirement, and generation-bound release are serialized at one machine-wide boundary per source.
 A live identity-matched owner is never displaced, and release removes only the exact generation the caller acquired.
 Retirement and orphan reconciliation signal a runner process group only while its recorded process identity still matches, or when the recorded leader is gone and only its own owned group survives.
@@ -713,7 +720,7 @@ FM_TOOL_UPDATE_PROBE_SECS=5   # 1..30 seconds allowed for one version or git pro
 FM_TOOL_UPDATE_BUDGET_SECS=20   # 1..120 seconds allowed for a whole watched-tool sweep; cut to fit FM_CHECK_TIMEOUT, and the cut is reported
 FM_TOOL_UPDATE_NOW=     # test override for the watched-tool sweep clock; the sweep budget still uses real time
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
-FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
+FM_PROCEVENT_CLAIM_ROOT=                # machine-wide process-source and delegated-Lavish reservation root; default $XDG_STATE_HOME/firstmate/procevent-claims
 FM_WHEN_OUTPUT_TAIL_BYTES=8192          # bound on the command-output tail inside one condition->action outcome document
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
