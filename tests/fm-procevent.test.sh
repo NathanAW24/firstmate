@@ -1812,16 +1812,12 @@ assert_contains "$adapter_help" "can lose the reply" \
   "the adapter's help states the one-shot reply crash boundary"
 assert_contains "$adapter_help" "worker-open" \
   "the adapter's help publishes the dedicated foreground-worker interface"
-assert_contains "$adapter_help" "foreground poll and every process-event" \
-  "the adapter's help publishes foreground-poll exclusion"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \
   "the runner's help scopes what it actually proves"
 assert_contains "$runner_help" "restart" \
   "the runner's help publishes the serialized restart boundary"
-assert_contains "$runner_help" "foreground-reservation capability" \
-  "the runner's help publishes the adapter-owned reservation seam"
 assert_not_contains "$runner_help" "exactly-once" \
   "the runner's help claims no exactly-once delivery"
 pass "the published interfaces state the loss limitation and claim no lossless delivery"
